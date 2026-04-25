@@ -1,7 +1,10 @@
 """
-SFT warmup: 30 examples of successful attacker outputs.
+SFT warmup: 29 hand-crafted attacker outputs spanning all 8 strategies.
 Run this BEFORE GRPO training to ensure the model produces valid DSL format
 and has non-zero reward probability from episode 1.
+
+The output checkpoint at ./checkpoints/jailbreak-attacker-sft is auto-detected
+by train.py as the starting point for Level-1 GRPO if it exists.
 """
 
 SFT_EXAMPLES = [
