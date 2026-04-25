@@ -1,4 +1,3 @@
-import hashlib
 import uuid
 from typing import Dict, Optional
 from topics import sample_topic, ForbiddenTopic, TOPICS_BY_ID
@@ -12,7 +11,7 @@ from strategy_dsl import (
 )
 from detector import detect, JailbreakResult
 from rewards import compute_attacker_reward, compute_defender_reward
-from defender import Defender
+from defender import Defender, StatefulDefender
 from config import MAX_TURNS
 from models import (
     AttackAction,
@@ -50,6 +49,14 @@ class JailbreakArena:
             "previous_payloads": [],
             "jailbreak_succeeded": False,
             "curriculum_level": curriculum_level,
+            # Per-session stateful defender — tracks the full chat history so
+            # multi-turn strategies (crescendo, payload_splitting) compound
+            # against the real defender model the way the spec intends.
+            "defender": StatefulDefender(
+                session_id=session_id,
+                defender_context=topic.defender_context,
+                defender=self.defender,
+            ),
         }
 
         observation = AttackObservation(
@@ -76,11 +83,7 @@ class JailbreakArena:
         topic: ForbiddenTopic = session["topic"]
         turn = session["turn_count"]
         curriculum_level = session["curriculum_level"]
-
-        # Deterministic seed: built-in hash() is randomised per process via
-        # PYTHONHASHSEED, which would make stub responses (and therefore reward
-        # curves) non-reproducible across runs. md5 is stable across runs.
-        seed_int = int.from_bytes(hashlib.md5(session_id.encode("utf-8")).digest()[:4], "big")
+        stateful_defender: StatefulDefender = session["defender"]
 
         if action.is_legitimate:
             # Legitimate-prompt path: payload goes to the defender verbatim, no
@@ -92,11 +95,10 @@ class JailbreakArena:
                 payload=action.payload,
                 turn_context=action.turn_context,
             )
-            defender_response = self.defender.respond(
-                attack_prompt,
-                topic,
-                turn,
-                session_seed=seed_int,
+            defender_response = stateful_defender.simulate_response(
+                attack_prompt=attack_prompt,
+                topic=topic,
+                turn=turn,
                 strategy=None,  # bypass strategy-keyed stub cue
             )
             detector_result = detect(defender_response)
@@ -135,11 +137,10 @@ class JailbreakArena:
                 )
 
             attack_prompt = construct_attack_prompt(dsl_action, topic.description, turn, MAX_TURNS)
-            defender_response = self.defender.respond(
-                attack_prompt,
-                topic,
-                turn,
-                session_seed=seed_int,
+            defender_response = stateful_defender.simulate_response(
+                attack_prompt=attack_prompt,
+                topic=topic,
+                turn=turn,
                 strategy=dsl_action.strategy,
             )
             detector_result = detect(defender_response)
