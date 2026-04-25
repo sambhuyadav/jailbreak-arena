@@ -154,7 +154,14 @@ def _http_response(
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        # Cloudflare-fronted endpoints (HF Router, OpenAI, etc.) often 403 the
+        # default Python-urllib User-Agent because it is associated with scraping
+        # traffic. Set a generic identifier so requests are accepted.
+        "User-Agent": "jailbreak-arena/1.0 (+https://huggingface.co/spaces/shambhuyadav/jailbreak-arena)",
+        "Accept": "application/json",
+    }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     data = json.dumps(payload).encode("utf-8")
