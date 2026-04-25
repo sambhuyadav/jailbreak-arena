@@ -162,6 +162,16 @@ def _http_response(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # Read the error body so quota / scope / model-availability messages
+        # surface to the client instead of a bare status code.
+        try:
+            err_body = e.read().decode("utf-8")[:300]
+        except Exception:
+            err_body = ""
+        raise DefenderUnavailable(
+            f"defender HTTP backend at {url} returned {e.code} {e.reason}: {err_body}"
+        ) from e
     except (urllib.error.URLError, OSError, TimeoutError, ValueError) as e:
         raise DefenderUnavailable(f"defender HTTP backend unreachable at {url}: {e}") from e
     try:
