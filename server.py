@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import MAX_TURNS
+from defender import DefenderUnavailable
 from environment import JailbreakArena
 from models import ResetRequest, StepRequest
 from strategy_dsl import STRATEGIES, STRATEGY_UNLOCK_LEVEL, CURRICULUM_STRATEGIES
@@ -87,6 +88,12 @@ def step(
         result = arena.step(session_id=x_session_id, action=request.action)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except DefenderUnavailable as e:
+        # Upstream model server (HF Router / vLLM / Ollama) is unreachable or
+        # rejected the request. 502 Bad Gateway is the correct status — surface
+        # the cause so callers can see "model not on router" or "401 unauthorised"
+        # instead of a bare 500 with no detail.
+        raise HTTPException(status_code=502, detail=f"defender backend error: {e}")
 
     response = JSONResponse(content=result.model_dump())
     response.headers["X-Session-Id"] = x_session_id
