@@ -192,7 +192,9 @@ def main():
         warmup_ratio=0.1,
         report_to="wandb",
         run_name=WANDB_RUN_NAME,
-        max_new_tokens=100,
+        # TRL renamed `max_new_tokens` → `max_completion_length` around 0.13;
+        # we target current TRL.
+        max_completion_length=100,
         temperature=0.8,
         num_generations=4,
     )
