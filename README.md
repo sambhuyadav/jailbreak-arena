@@ -275,4 +275,3 @@ jailbreak-arena/
 - **Author:** shambhuyadav
 - **License:** MIT
 - **Built for:** OpenEnv Hackathon 2026, Scaler, Bangalore
-- **Origin:** migrated and extended from `nl2sql-arena`
