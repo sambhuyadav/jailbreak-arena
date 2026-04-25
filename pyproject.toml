@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jailbreak-arena"
+version = "1.0.0"
+description = "Adversarial self-play RL environment for LLM safety training"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.9",
+    "openai>=1.54",
+    "requests>=2.32",
+]
+
+[tool.setuptools]
+py-modules = [
+    "config",
+    "topics",
+    "strategy_dsl",
+    "detector",
+    "defender",
+    "rewards",
+    "models",
+    "environment",
+    "server",
+    "inference",
+    "train",
+    "sft_warmup",
+]

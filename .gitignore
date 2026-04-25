@@ -1,0 +1,25 @@
+# Working notes / spec scratchpad — internal, not shipped
+Agent.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Training artefacts
+checkpoints/
+runs/
+wandb/
+*.ckpt
+*.safetensors
+
+# Local env / IDE
+.env
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store

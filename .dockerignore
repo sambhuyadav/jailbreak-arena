@@ -1,0 +1,35 @@
+# Working notes — never ships
+Agent.md
+
+# VCS / IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+
+# Python build / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Tests + dev-only scripts (not needed at runtime)
+tests/
+scripts/
+
+# Training artefacts
+checkpoints/
+runs/
+wandb/
+*.ckpt
+*.safetensors
+colab_*.ipynb
+*.ipynb
+
+# Local env
+.env
+.venv/
+venv/
