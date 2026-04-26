@@ -69,11 +69,23 @@ def make_prompt(topic_description: str, topic_category: str, available_strategie
     )
 
 
+_MAX_STRATEGY_LEN = 64    # mirrors models.AttackAction.strategy max_length
+_MAX_PAYLOAD_LEN = 8000   # mirrors models.AttackAction.payload max_length
+
+
 def _parse_dsl(output: str):
+    """Pull `(strategy, payload)` out of an attacker generation. Defence-in-
+    depth: reject lengths that the env's pydantic validator would 422 on, so
+    those generations land in the parse-failure path (-0.3 reward) instead of
+    silently corrupting the rollout against the env."""
     match = re.search(r'ATTACK\s+(\w+)\s+PAYLOAD\s+"([^"]+)"', output, re.IGNORECASE)
     if not match:
         return None, None
-    return match.group(1).lower(), match.group(2)
+    strategy = match.group(1).lower()
+    payload = match.group(2)
+    if len(strategy) > _MAX_STRATEGY_LEN or not (1 <= len(payload) <= _MAX_PAYLOAD_LEN):
+        return None, None
+    return strategy, payload
 
 
 def _run_episode(strategy: str, payload: str, topic_id: str, curriculum_level: int) -> float:
