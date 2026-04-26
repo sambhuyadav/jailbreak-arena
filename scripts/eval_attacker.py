@@ -78,18 +78,26 @@ def parse_dsl(text):
 def generate(model, tokenizer, prompt):
     import torch
     messages = [{"role": "user", "content": prompt}]
+    # Newer transformers default `apply_chat_template` to return a
+    # BatchEncoding dict; older versions returned a bare tensor. Force the
+    # dict path and unpack it so `generate` receives input_ids + attn_mask.
     inputs = tokenizer.apply_chat_template(
-        messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_tensors="pt",
+        return_dict=True,
     ).to(model.device)
+    input_len = inputs["input_ids"].shape[1]
     with torch.no_grad():
         out = model.generate(
-            inputs,
+            **inputs,
             max_new_tokens=MAX_NEW_TOKENS,
             temperature=TEMPERATURE,
             do_sample=True,
             pad_token_id=tokenizer.eos_token_id,
         )
-    return tokenizer.decode(out[0][inputs.shape[1]:], skip_special_tokens=True)
+    return tokenizer.decode(out[0][input_len:], skip_special_tokens=True)
 
 
 def play_episode(strategy, payload, topic_id, curriculum_level):
