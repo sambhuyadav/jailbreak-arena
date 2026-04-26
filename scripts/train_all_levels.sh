@@ -26,6 +26,11 @@ export DEFENDER_BACKEND="${DEFENDER_BACKEND:-stub}"
 export ENV_BASE_URL="${ENV_BASE_URL:-http://127.0.0.1:7860}"
 LEVELS="${LEVELS:-1 2 3}"
 
+echo ">>> installing system deps (C toolchain required for triton kernel JIT)"
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get install -y -qq build-essential >/dev/null 2>&1 || true
+fi
+
 echo ">>> installing deps"
 pip install -q --no-cache-dir -r requirements.txt
 pip install -q --no-cache-dir -r requirements-train.txt
