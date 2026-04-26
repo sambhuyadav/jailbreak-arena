@@ -206,7 +206,7 @@ def main():
         run_name=WANDB_RUN_NAME,
         # TRL renamed `max_new_tokens` → `max_completion_length` around 0.13;
         # we target current TRL.
-        max_completion_length=100,
+        max_completion_length=256,
         temperature=0.8,
         num_generations=4,
     )
