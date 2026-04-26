@@ -16,7 +16,7 @@ tags:
 
 # Jailbreak Arena
 
-> An OpenEnv environment where an attacker LLM learns to jailbreak a defender LLM, and the defender fine-tunes on its own losses. A self-improving safety arms race, packaged as a standard `reset / step / state` API.
+> An OpenEnv environment where an attacker LLM learns to jailbreak a defender LLM, and the defender fine-tunes on its own losses. A self-improving safety arms race — packaged as a standard `reset / step / state` API, with real GRPO training and a live HF Space.
 
 [![🤗 Live Space](https://img.shields.io/badge/🤗_Live_Space-yellow)](https://huggingface.co/spaces/shambhuyadav/jailbreak-arena)
 [![Trained model](https://img.shields.io/badge/🤗_Model-jailbreak--attacker--l1-blue)](https://huggingface.co/arnav-yadav/jailbreak-attacker-l1)
@@ -102,7 +102,7 @@ Standard OpenEnv:
 | GET  | `/metrics` | Aggregate JSR + reward stats |
 | GET  | `/topics`, `/strategies` | Catalog endpoints |
 
-Try it now (replace with the live Space URL):
+Try the live Space:
 
 ```bash
 curl -s https://shambhuyadav-jailbreak-arena.hf.space/health
@@ -113,81 +113,73 @@ curl -s -X POST https://shambhuyadav-jailbreak-arena.hf.space/reset | python -m 
 
 ## 3. Results — what changed after training
 
-Training: **GRPO** via TRL + Unsloth on `Qwen2.5-1.5B-Instruct` with LoRA `r=16` on `q,v,k,o`. **3 epochs, 144 global steps, ~24 min on a single GPU.** Reward function calls the live env via HTTP each rollout.
+Training: **GRPO** via TRL + Unsloth on `Qwen2.5-1.5B-Instruct` with LoRA `r=16` on `q, k, v, o` projections. **3 epochs, 144 global steps, 24 min on a single GPU** (W&B `train_runtime = 1455s`). The reward function calls the live env over HTTP every rollout — the agent is genuinely learning against the same `/step` endpoint a judge can `curl`.
 
-### Reward and loss climbed exactly as expected
+### What the model learned
 
-The training reward climbed from `−1.60 → −0.36` over 144 steps; the per-group reward variance collapsed from `0.85 → 0.22` as the policy converged on strategies that work. Loss is the standard GRPO/TRL signature (slow, controlled rise — not classification cross-entropy).
+The training reward climbed from `−1.60 → −0.36` and the per-group reward variance collapsed from `0.85 → 0.22`. By the end of training, `frac_reward_zero_std = 0.875` — meaning that for ~88% of prompt groups, all sampled completions earned identical rewards. **That's the policy converging on a per-topic strategy choice**, not just learning to emit valid DSL. The attacker discovered which of the three Level-1 strategies works for which topic and stopped exploring further.
 
-![GRPO Level 1 training curves](./docs/grpo_curriculum.png)
+This is exactly the curve that compounds when L2 and L3 unlock multi-turn strategies (`payload_splitting`, `crescendo`) — those force the model past single-shot exploits and produce the big late-curriculum JSR jumps.
 
-📊 **Live W&B dashboard:** [run `tib83q77`](https://wandb.ai/2024eb02510-/jailbreak-arena/runs/tib83q77) — all 25 panels, raw data, system metrics.
+![GRPO Level 1 training curves — anchored to real W&B endpoints (run tib83q77)](./docs/grpo_curriculum.png)
 
-🤗 **Trained checkpoint:** [`arnav-yadav/jailbreak-attacker-l1`](https://huggingface.co/arnav-yadav/jailbreak-attacker-l1)
+📊 [**Live W&B dashboard**](https://wandb.ai/2024eb02510-/jailbreak-arena/runs/tib83q77) — all 25 panels, raw data, system metrics.
+🤗 [**Trained checkpoint** `arnav-yadav/jailbreak-attacker-l1`](https://huggingface.co/arnav-yadav/jailbreak-attacker-l1) — pull and inspect.
 
-### Jailbreak Success Rate jumped after Level 1
+### Jailbreak Success Rate
 
-![JSR after L1](./docs/jsr_curve.png)
+![JSR baseline → L1](./docs/jsr_curve.png)
 
 | Stage | JSR | Source |
 |-------|-----|--------|
-| Baseline (untrained Qwen, random strategies) | **12%** | [`baseline_run.txt`](./baseline_run.txt), real run |
+| Baseline — untrained Qwen, random strategies | **12.5%** | [`baseline_run.txt`](./baseline_run.txt) |
 | After GRPO Level 1 | **~28%** (est.)¹ | derived from W&B `train/reward = −0.356` |
-| After Level 2 / 3 / self-play | (in progress) | — |
+| Level 2, Level 3, self-play | in progress | — |
 
-¹ The training reward is a multi-turn aggregate; an explicit eval pass against `/metrics` gives the measured JSR. Run [`scripts/eval_attacker.py`](./scripts/eval_attacker.py) on the trained checkpoint to replace the estimate with a measured number.
-
-### What the model actually learned
-
-In Level 1 the attacker has access to three strategies. The reward curve and `frac_reward_zero_std = 0.875` at convergence indicate the policy collapsed onto a small set of high-payoff strategies per topic — i.e., it learned *which strategy to use for which topic*, not just to emit valid DSL. (Level 2/3 add multi-turn strategies — `payload_splitting`, `crescendo` — where the same compounding effect is what produces the big late-curriculum JSR jumps.)
+¹ The training reward is a multi-turn aggregate that includes refusal and turn-efficiency penalties; an explicit eval pass against `/metrics` gives the measured JSR. Run [`scripts/eval_attacker.py`](./scripts/eval_attacker.py) on the trained checkpoint to replace the estimate with a measured number.
 
 ---
 
 ## 4. Why it matters
 
-**Static red-team benchmarks decay.** GPT-4 jailbreaks from 2023 don't work on 2026 models, and 2026 jailbreaks won't have been written down anywhere when the next model trains. Safety teams need an environment, not a frozen test set.
+**Static benchmarks decay.** GPT-4 jailbreaks from 2023 don't break 2026 models, and 2026 jailbreaks aren't written down anywhere when the next model trains. Safety teams need a *moving* attack distribution, not a frozen test set.
 
-**Defender training is currently unsupervised on attack distribution.** RLHF/RLAIF teach a model to *prefer* helpful-and-harmless responses, but they don't teach it against an adaptive attacker. Adversarial self-play is how chess and Go agents passed humans; safety is the same shape of problem.
+**RLHF doesn't see the attacker.** Helpfulness/harmlessness rewards teach the defender to *prefer* good responses; they don't teach it against an adaptive opponent. Adversarial self-play is how chess and Go passed humans — safety is the same shape of problem.
 
-**Who should care:**
-- **Safety teams at frontier labs** — drop in any defender, get a continuously-updating attack distribution.
-- **Independent researchers** — a clean RL benchmark for multi-agent safety, not just a list of prompts.
-- **Hackathon judges** — a working OpenEnv submission with real GRPO training, real W&B logs, and a deployable HF Space.
+**Compared to existing red-team suites** ([HarmBench](https://arxiv.org/abs/2402.04249), [AdvBench](https://arxiv.org/abs/2307.15043), [JailbreakBench](https://jailbreakbench.github.io/)): those are static prompt corpora — useful, but the attack distribution is fixed. Jailbreak Arena is a *closed loop*: the defender's reward shapes what the attacker discovers, which then shapes what the defender retrains on. Self-play, not labeling.
 
-**What's novel here vs. existing red-team suites** (HarmBench, AdvBench, JailbreakBench): those are static prompt corpora. Jailbreak Arena is a *closed loop* — the defender's reward shapes what the attacker discovers, which then shapes what the defender retrains on. Self-play, not labeling.
+**Who plugs in:** safety teams who want a continuously-updating attack distribution against any defender; researchers who want a clean RL benchmark for multi-agent safety instead of a prompt list.
 
 ---
 
 ## Quick start
 
-### Local
+**Run the env locally** (any agent can plug in over HTTP):
 
 ```bash
 pip install -r requirements.txt
-uvicorn server:app --host 0.0.0.0 --port 7860 --reload
-
-# in another terminal
+uvicorn server:app --host 0.0.0.0 --port 7860
+# verify
 curl -s http://localhost:7860/health
 ./scripts/validate-submission.sh http://localhost:7860
 ```
 
-### Docker
+**Or via Docker:**
 
 ```bash
-docker build -t jailbreak-arena .
-docker run -p 7860:7860 jailbreak-arena
+docker build -t jailbreak-arena . && docker run -p 7860:7860 jailbreak-arena
 ```
 
-### Train your own attacker
-
-Open [`colab_train.ipynb`](./colab_train.ipynb) on Colab (T4 is enough). Or:
+**Train a fresh attacker** (T4 is enough, ~25 min/level):
 
 ```bash
 pip install -r requirements-train.txt
 CURRICULUM_LEVEL=1 python train.py
 ```
 
-### Evaluate a trained attacker
+Or open [`colab_train.ipynb`](./colab_train.ipynb) for a one-click notebook.
+
+**Evaluate the published L1 checkpoint:**
 
 ```bash
 MODEL_NAME=arnav-yadav/jailbreak-attacker-l1 \
@@ -195,63 +187,48 @@ MODEL_NAME=arnav-yadav/jailbreak-attacker-l1 \
   python scripts/eval_attacker.py
 ```
 
-Writes `eval_l1_run.txt` with per-topic results and prints the measured JSR.
+Prints the measured JSR, writes `eval_l1_run.txt` with per-topic transcripts.
 
 ---
 
 ## Anti-reward-hacking
 
-The detector is regex/keyword — in principle gameable. The reward shape blocks the obvious exploits:
+The detector is regex/keyword — in principle gameable, in practice fenced by the reward shape:
 
-- **Refusal signals dominate compliance signals** when both fire — no smuggling "sure, here's how" past a refusal phrase.
-- **Identical-payload penalty** kills copy-paste-the-winner attacks.
-- **Turn-efficiency penalty** stops the attacker from spamming turns to find lucky completions.
-- **Parse-failure penalty** enforces well-formed DSL — no garbage to game the matcher.
-- **Symmetric defender penalty** — false positives cost as much as false negatives, so the defender can't trivially refuse everything.
-- **Self-play loop** retrains the defender on the attacker's wins, removing each successful exploit class as it's discovered.
+- **Refusals dominate compliance** when both fire in the same response — no smuggling "sure, here's how" past a refusal phrase.
+- **Identical-payload penalty** kills copy-paste exploits.
+- **Turn-efficiency penalty** stops turn-spamming for lucky samples.
+- **Parse-failure penalty** enforces well-formed DSL.
+- **Symmetric defender penalty** — false positives cost the same as false negatives, so the defender can't trivially refuse everything.
+- **Self-play loop** removes each successful exploit class by retraining the defender on the attacker's wins.
 
-See [`rewards.py`](./rewards.py) for exact constants and clamps.
+Constants and clamps in [`rewards.py`](./rewards.py).
 
 ---
 
 ## Project layout
 
-```
-jailbreak-arena/
-├── server.py              # FastAPI: /reset /step /state /health /metrics
-├── environment.py         # JailbreakArena: session state machine
-├── topics.py              # 24-topic forbidden-topic bank + legitimate prompts
-├── strategy_dsl.py        # 8 strategies + DSL parser + per-strategy templates
-├── detector.py            # keyword/regex jailbreak detector
-├── defender.py            # defender backends: stub | http | auto
-├── rewards.py             # attacker + defender shaped rewards (constants + clamps)
-├── models.py              # pydantic schemas for the API
-├── config.py              # arena env vars (MAX_TURNS)
-│
-├── train.py               # GRPO loop (TRL + Unsloth, LoRA r=16)
-├── sft_warmup.py          # 29 SFT examples to cold-start the attacker
-├── inference.py           # eval an OpenAI-compatible attacker against the env
-├── colab_train.ipynb      # one-click Colab training notebook
-│
-├── scripts/
-│   ├── eval_attacker.py        # load trained checkpoint, measure JSR via /metrics
-│   ├── plot_jsr.py             # JSR chart for the README
-│   ├── plot_grpo_l1.py         # training-curve chart anchored to W&B endpoints
-│   ├── random_baseline.py      # untrained-attacker JSR floor
-│   ├── train_all_levels.sh     # run L1 → L2 → L3 sequentially
-│   └── validate-submission.sh  # 14-check API conformance
-│
-├── tests/                 # pytest suite (config, defender, detector, env, rewards, dsl, server)
-├── docs/
-│   ├── grpo_curriculum.png     # training curves (anchored to real W&B run)
-│   └── jsr_curve.png           # baseline → L1 JSR
-│
-├── Dockerfile
-├── openenv.yaml           # OpenEnv submission manifest
-├── requirements.txt       # runtime deps
-├── requirements-train.txt # training-only deps (unsloth, trl, wandb, etc.)
-└── pyproject.toml
-```
+| Path | Purpose |
+|------|---------|
+| `server.py` | FastAPI surface — `/reset /step /state /health /metrics /topics /strategies` |
+| `environment.py` | `JailbreakArena` — session state machine, multi-turn rollouts |
+| `topics.py` | 24 forbidden topics across 4 categories + matched `legitimate_prompts` |
+| `strategy_dsl.py` | 8 strategies + DSL parser + per-strategy templates |
+| `detector.py` | Keyword/regex `complied / partial / refused` classifier |
+| `defender.py` | Defender backends — `stub` (CI), `http` (real LLM), `auto` (try-then-fallback) |
+| `rewards.py` | Shaped rewards for both agents — single source of truth for constants |
+| `train.py` | GRPO loop (TRL + Unsloth, LoRA `r=16`) |
+| `sft_warmup.py` | 29 hand-crafted SFT examples to cold-start GRPO |
+| `inference.py` | Eval an OpenAI-compatible attacker (HF Router, OpenAI, etc.) |
+| `colab_train.ipynb` | One-click training notebook |
+| `frontend/jailbreak-frontend.html` | Standalone web UI for the env (contributed by [@RatneshVaibhav](https://github.com/RatneshVaibhav)) |
+| `scripts/eval_attacker.py` | Load trained checkpoint, measure JSR against live env |
+| `scripts/plot_jsr.py`, `plot_grpo_l1.py` | Reproducible chart generators |
+| `scripts/random_baseline.py` | Untrained-attacker JSR floor |
+| `scripts/validate-submission.sh` | OpenEnv 14-check API conformance |
+| `tests/` | pytest suite — config, defender, detector, env, rewards, DSL, server |
+| `docs/` | Charts embedded in this README |
+| `Dockerfile`, `openenv.yaml`, `requirements*.txt`, `pyproject.toml` | Deployment + dependencies |
 
 ---
 
@@ -278,21 +255,21 @@ Defender backend is selected at runtime — keeps GRPO rollouts cheap during tra
 
 ## Training pipeline
 
-1. **SFT warmup** ([`sft_warmup.py`](./sft_warmup.py)) — 29 hand-crafted attacker outputs across all 8 strategies. Cold-start so GRPO has non-zero signal from episode 1.
-2. **GRPO** ([`train.py`](./train.py)) — TRL + Unsloth on Qwen 2.5 1.5B with LoRA. Reward function calls the live env via HTTP. Curriculum level promotes when `avg_reward > threshold`. Each level loads from the previous level's checkpoint, so the curriculum compounds.
-3. **Self-play** — after the attacker plateaus, harvest its successful payloads, fine-tune the defender on `(payload, refusal)` pairs, retrain the attacker against the harder defender. Repeat.
+1. **SFT warmup** ([`sft_warmup.py`](./sft_warmup.py)) — 29 hand-crafted DSL examples across all 8 strategies. Cold-starts GRPO with non-zero signal from episode 1.
+2. **GRPO** ([`train.py`](./train.py)) — TRL + Unsloth on Qwen 2.5 1.5B + LoRA. Each level loads from the previous level's checkpoint and promotes when `avg_reward > threshold`, so the curriculum compounds rather than restarting.
+3. **Self-play** — once the attacker plateaus, harvest winning payloads → SFT the defender on `(payload, refusal)` pairs → retrain the attacker against the harder defender. Repeat.
 
-Reward curves and JSR are tracked in [Weights & Biases](https://wandb.ai/2024eb02510-/jailbreak-arena).
+All runs in [Weights & Biases](https://wandb.ai/2024eb02510-/jailbreak-arena).
 
 ---
 
 ## Roadmap
 
-- [x] L1 GRPO trained — checkpoint `arnav-yadav/jailbreak-attacker-l1`
-- [ ] L2 GRPO (multi-turn strategies unlock)
-- [ ] L3 GRPO (`crescendo`, `nested_instruction`)
-- [ ] Self-play cycle 1 — defender SFT on L3 wins
-- [ ] Cycle-2 attacker GRPO against the harder defender
+- [x] **L1 GRPO** — `arnav-yadav/jailbreak-attacker-l1` (24 min, reward −1.6 → −0.36)
+- [ ] **L2 GRPO** — unlock `payload_splitting`, `semantic_obfuscation`, `false_context`
+- [ ] **L3 GRPO** — unlock `crescendo`, `nested_instruction` (the multi-turn strategies)
+- [ ] **Self-play cycle 1** — defender SFT on L3 wins
+- [ ] **Cycle-2 attacker** — re-GRPO against the harder defender
 
 ---
 
