@@ -24,15 +24,39 @@ from typing import Optional
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from openenv.core.env_server import HTTPEnvServer, ServerMode
 
 from config import MAX_TURNS
 from defender import DefenderUnavailable
-from jailbreaker_env import JailbreakerEnv, get_shared_arena
+from environment import JailbreakArena
 from models import ResetRequest, StepRequest
-from openenv_models import JailbreakAction, JailbreakObservation
 from strategy_dsl import STRATEGIES, STRATEGY_UNLOCK_LEVEL, CURRICULUM_STRATEGIES
 from topics import TOPICS
+
+# OpenEnv adds the /ws WebSocket surface for OpenEnv-compatible clients. The
+# core HTTP routes (/reset, /step, /state, /metrics) work without it, so we
+# treat the import as optional — if openenv-core fails to install in the
+# deployment environment, the Space still boots over plain HTTP.
+try:
+    from openenv.core.env_server import HTTPEnvServer, ServerMode
+    from jailbreaker_env import JailbreakerEnv, get_shared_arena as _openenv_shared_arena
+    from openenv_models import JailbreakAction, JailbreakObservation
+    _OPENENV_AVAILABLE = True
+except ImportError:
+    _OPENENV_AVAILABLE = False
+
+
+_SHARED_ARENA: Optional[JailbreakArena] = None
+
+
+def get_shared_arena() -> JailbreakArena:
+    """Lazy singleton — keeps a single `Defender` (and its HTTP client) for the
+    whole process. WebSocket sessions and HTTP routes both go through it."""
+    global _SHARED_ARENA
+    if _OPENENV_AVAILABLE:
+        return _openenv_shared_arena()
+    if _SHARED_ARENA is None:
+        _SHARED_ARENA = JailbreakArena()
+    return _SHARED_ARENA
 
 
 def _resolve_version() -> str:
@@ -232,10 +256,11 @@ def metrics():
 # stateless `/reset` and `/step` are skipped — those would conflict with the
 # session-aware routes above. FastAPI matches routes in registration order,
 # so our `/health` wins over the framework's plain default.
-_OPENENV_SERVER = HTTPEnvServer(
-    env=JailbreakerEnv,
-    action_cls=JailbreakAction,
-    observation_cls=JailbreakObservation,
-    max_concurrent_envs=int(os.getenv("MAX_CONCURRENT_ENVS", "8")),
-)
-_OPENENV_SERVER.register_routes(app, mode=ServerMode.PRODUCTION)
+if _OPENENV_AVAILABLE:
+    _OPENENV_SERVER = HTTPEnvServer(
+        env=JailbreakerEnv,
+        action_cls=JailbreakAction,
+        observation_cls=JailbreakObservation,
+        max_concurrent_envs=int(os.getenv("MAX_CONCURRENT_ENVS", "8")),
+    )
+    _OPENENV_SERVER.register_routes(app, mode=ServerMode.PRODUCTION)
