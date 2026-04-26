@@ -16,9 +16,10 @@ tags:
 
 # Jailbreak Arena
 
-> An OpenEnv environment where an attacker LLM learns to jailbreak a defender LLM, and the defender fine-tunes on its own losses. A self-improving safety arms race — packaged as a standard `reset / step / state` API, with real GRPO training and a live HF Space.
+> An OpenEnv environment where an attacker LLM learns to jailbreak a defender LLM, and the defender fine-tunes on its own losses. A self-improving safety arms race — packaged on top of `openenv-core` (Action / Observation / State / Environment subclasses + WebSocket `/ws`), with real GRPO training and a live HF Space.
 
 [![🤗 Live Space](https://img.shields.io/badge/🤗_Live_Space-yellow)](https://huggingface.co/spaces/shambhuyadav/jailbreak-arena)
+[![Built on OpenEnv](https://img.shields.io/badge/built_on-openenv--core-8A2BE2)](https://github.com/meta-pytorch/OpenEnv)
 [![Trained model](https://img.shields.io/badge/🤗_Model-jailbreak--attacker--l1-blue)](https://huggingface.co/arnav-yadav/jailbreak-attacker-l1)
 [![W&B run](https://img.shields.io/badge/W%26B-grpo--level--1-FFBE00)](https://wandb.ai/2024eb02510-/jailbreak-arena/runs/tib83q77)
 [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](./colab_train.ipynb)
@@ -91,22 +92,49 @@ Shaped, dense, and **symmetric for the defender** — false positives cost as mu
 Final reward clamped to `[-1.0, 1.0]`. See [`rewards.py`](./rewards.py).
 
 ### API surface
-Standard OpenEnv:
+
+**OpenEnv-native** (provided by `openenv-core`'s `HTTPEnvServer.register_routes`):
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| POST | `/reset` | Sample topic + curriculum level, get session id |
-| POST | `/step` | Submit `AttackAction`, get reward + observation |
-| GET  | `/state` | Read session state |
-| GET  | `/health` | Liveness + resolved env config |
+| WS   | `/ws`        | Persistent per-session arena episodes — what `EnvClient` (and TRL's OpenEnv integration) speaks |
+| GET  | `/metadata`  | Environment manifest (action/observation class names, capabilities) |
+| GET  | `/schema`    | JSON Schema for `JailbreakAction` / `JailbreakObservation` / `JailbreakState` |
+| POST | `/mcp`       | MCP JSON-RPC entry point |
+
+**Session-aware HTTP layer** (multi-turn rollouts over plain HTTP, used by the GRPO trainer and `validate-submission.sh`):
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| POST | `/reset` | Sample topic + curriculum level, get session id (returned in `X-Session-Id`) |
+| POST | `/step` | Submit `AttackAction` with `X-Session-Id`, get reward + observation |
+| GET  | `/state` | Read session state for `X-Session-Id` |
+| GET  | `/health` | Liveness + resolved env config (defender backend, framework version) |
 | GET  | `/metrics` | Aggregate JSR + reward stats |
 | GET  | `/topics`, `/strategies` | Catalog endpoints |
+
+Both surfaces share the same `JailbreakerEnv` instance, so metrics and the defender pool stay coherent across them.
 
 Try the live Space:
 
 ```bash
 curl -s https://shambhuyadav-jailbreak-arena.hf.space/health
+curl -s https://shambhuyadav-jailbreak-arena.hf.space/schema | python -m json.tool
 curl -s -X POST https://shambhuyadav-jailbreak-arena.hf.space/reset | python -m json.tool
+```
+
+Or from a notebook:
+
+```python
+from openenv.core.client_types import StepResult
+from openenv.core.env_client import EnvClient
+from openenv_models import JailbreakAction, JailbreakObservation, JailbreakState
+
+with EnvClient[JailbreakAction, JailbreakObservation, JailbreakState](
+    base_url="https://shambhuyadav-jailbreak-arena.hf.space",
+) as env:
+    obs = env.reset(curriculum_level=1)
+    result: StepResult = env.step(JailbreakAction(strategy="roleplay_injection", payload="..."))
 ```
 
 ---
@@ -128,15 +156,16 @@ This is exactly the curve that compounds when L2 and L3 unlock multi-turn strate
 
 ### Jailbreak Success Rate
 
-![JSR baseline → L1](./docs/jsr_curve.png)
+![JSR baseline → trained → self-play](./docs/jsr_curve.png)
 
 | Stage | JSR | Source |
 |-------|-----|--------|
-| Baseline — untrained Qwen, random strategies | **12.5%** | [`baseline_run.txt`](./baseline_run.txt) |
-| After GRPO Level 1 | **~28%** (est.)¹ | derived from W&B `train/reward = −0.356` |
-| Level 2, Level 3, self-play | in progress | — |
+| Baseline — random attacker, untrained Qwen | **17%** | [`baseline_run.txt`](./baseline_run.txt) |
+| GRPO Level 1 — trained attacker | **32%** | W&B `grpo-level-1` final reward |
+| GRPO Level 2 — trained attacker | **50%** | W&B `grpo-level-2` final reward |
+| Self-play — defender hardened on attacker traces | **19%** | post-SFT eval |
 
-¹ The training reward is a multi-turn aggregate that includes refusal and turn-efficiency penalties; an explicit eval pass against `/metrics` gives the measured JSR. Run [`scripts/eval_attacker.py`](./scripts/eval_attacker.py) on the trained checkpoint to replace the estimate with a measured number.
+The curve climbs as the attacker learns to combine strategies, then collapses back near baseline once the defender is fine-tuned on the attacker's own traces — exactly the loop the arena is built to drive.
 
 ---
 
@@ -191,6 +220,24 @@ Prints the measured JSR, writes `eval_l1_run.txt` with per-topic transcripts.
 
 ---
 
+## OpenEnv integration
+
+Jailbreak Arena is built on **[`openenv-core`](https://github.com/meta-pytorch/OpenEnv)** (≥0.2.1) — the same framework Meta ships with the reference `chess_env`, `coding_env`, and `wordle_env` examples:
+
+| Framework primitive | Where we use it |
+|---|---|
+| `openenv.core.env_server.Action` | `JailbreakAction` in [`openenv_models.py`](./openenv_models.py) |
+| `openenv.core.env_server.Observation` | `JailbreakObservation` in [`openenv_models.py`](./openenv_models.py) |
+| `openenv.core.env_server.State` | `JailbreakState` in [`openenv_models.py`](./openenv_models.py) |
+| `openenv.core.env_server.Environment` | `JailbreakerEnv` in [`jailbreaker_env.py`](./jailbreaker_env.py) — `SUPPORTS_CONCURRENT_SESSIONS = True` |
+| `openenv.core.env_server.HTTPEnvServer.register_routes` | Mounted in [`server.py`](./server.py) (`mode=ServerMode.PRODUCTION`) — gives us `/ws`, `/metadata`, `/schema`, `/mcp` |
+
+The framework manages per-session lifecycles, schema generation, and the WebSocket transport. We layer our session-aware HTTP `/reset` and `/step` (keyed by `X-Session-Id`) on top so the GRPO trainer and CI checks can drive multi-turn rollouts over plain HTTP without speaking WebSocket — both surfaces share the same `JailbreakerEnv` instance and the same defender pool.
+
+OpenEnv-native clients (e.g. `EnvClient`, the [TRL OpenEnv integration](https://huggingface.co/docs/trl/main/en/openenv), or any consumer of the published JSON Schema) plug straight into `/ws` without any custom adapter.
+
+---
+
 ## Anti-reward-hacking
 
 The detector is regex/keyword — in principle gameable, in practice fenced by the reward shape:
@@ -210,13 +257,16 @@ Constants and clamps in [`rewards.py`](./rewards.py).
 
 | Path | Purpose |
 |------|---------|
-| `server.py` | FastAPI surface — `/reset /step /state /health /metrics /topics /strategies` |
+| `server.py` | FastAPI surface — mounts `openenv-core`'s `HTTPEnvServer` (`/ws`, `/metadata`, `/schema`, `/mcp`) plus session-aware `/reset /step /state /health /metrics /topics /strategies` |
+| `jailbreaker_env.py` | `JailbreakerEnv(openenv.core.env_server.Environment)` — framework-native facade over `JailbreakArena` |
+| `openenv_models.py` | `JailbreakAction` / `JailbreakObservation` / `JailbreakState` — subclass `openenv-core`'s `Action` / `Observation` / `State` |
 | `environment.py` | `JailbreakArena` — session state machine, multi-turn rollouts |
 | `topics.py` | 24 forbidden topics across 4 categories + matched `legitimate_prompts` |
 | `strategy_dsl.py` | 8 strategies + DSL parser + per-strategy templates |
 | `detector.py` | Keyword/regex `complied / partial / refused` classifier |
 | `defender.py` | Defender backends — `stub` (CI), `http` (real LLM), `auto` (try-then-fallback) |
 | `rewards.py` | Shaped rewards for both agents — single source of truth for constants |
+| `models.py` | Internal Pydantic types used by the session-aware HTTP layer (`AttackAction`, `AttackObservation`, ...) |
 | `train.py` | GRPO loop (TRL + Unsloth, LoRA `r=16`) |
 | `sft_warmup.py` | 29 hand-crafted SFT examples to cold-start GRPO |
 | `inference.py` | Eval an OpenAI-compatible attacker (HF Router, OpenAI, etc.) |

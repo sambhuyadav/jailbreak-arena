@@ -1,3 +1,21 @@
+"""
+HTTP server for Jailbreak Arena.
+
+Built on `openenv-core`: the FastAPI app is mounted by
+`openenv.core.env_server.HTTPEnvServer`, which gives us `/ws` (per-session
+WebSocket), `/metadata`, `/schema`, and the OpenEnv-native MCP endpoints for
+free. On top of that we keep a session-aware HTTP layer (`/reset`, `/step`,
+`/state` keyed by `X-Session-Id`) so the existing GRPO trainer, the
+validate-submission script, and any plain-HTTP client can drive multi-turn
+episodes without speaking WebSocket.
+
+Custom routes are registered FIRST so they shadow the framework's stateless
+HTTP control endpoints (the framework's `/reset` and `/step` create a fresh
+env per request, which can't carry the multi-turn state our reward shaping
+depends on). The framework's `/ws` path remains the canonical OpenEnv-native
+client surface.
+"""
+
 import os
 import uuid
 from importlib import metadata as importlib_metadata
@@ -6,11 +24,13 @@ from typing import Optional
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from openenv.core.env_server import HTTPEnvServer, ServerMode
 
 from config import MAX_TURNS
 from defender import DefenderUnavailable
-from environment import JailbreakArena
+from jailbreaker_env import JailbreakerEnv, get_shared_arena
 from models import ResetRequest, StepRequest
+from openenv_models import JailbreakAction, JailbreakObservation
 from strategy_dsl import STRATEGIES, STRATEGY_UNLOCK_LEVEL, CURRICULUM_STRATEGIES
 from topics import TOPICS
 
@@ -29,7 +49,7 @@ SERVICE_NAME = "jailbreak-arena"
 
 app = FastAPI(
     title="Jailbreak Arena",
-    description="Adversarial self-play environment for training LLM safety agents",
+    description="Adversarial self-play environment for training LLM safety agents — built on OpenEnv.",
     version=VERSION,
 )
 
@@ -43,9 +63,10 @@ app.add_middleware(
     expose_headers=["X-Session-Id"],
 )
 
-# NOTE: env vars (DEFENDER_*, MAX_TURNS) are read once at import time. Changing
-# them in the shell or HF Spaces variables requires restarting the process.
-arena = JailbreakArena()
+# Process-shared arena: the same instance the OpenEnv `JailbreakerEnv` wrapper
+# uses, so WebSocket sessions and X-Session-Id HTTP sessions live in one
+# session map and one defender pool.
+arena = get_shared_arena()
 
 
 @app.post("/reset")
@@ -120,6 +141,11 @@ def health():
         "environment": SERVICE_NAME,
         "version": VERSION,
         "max_turns": MAX_TURNS,
+        "openenv": {
+            "framework": "openenv-core",
+            "ws_endpoint": "/ws",
+            "schema_endpoint": "/schema",
+        },
         "defender": {
             "backend": arena.defender.backend,
             "model": arena.defender.model,
@@ -199,3 +225,17 @@ def metrics():
         "jailbreak_success_rate": _LIFETIME_STATS["jailbreak_successes"] / max(1, completed),
         "avg_attacker_reward": _LIFETIME_STATS["reward_sum"] / max(1, completed),
     }
+
+
+# OpenEnv-native surface: WebSocket `/ws`, plus `/metadata`, `/schema`, `/mcp`,
+# and a default `/health`. We register in PRODUCTION mode so the framework's
+# stateless `/reset` and `/step` are skipped — those would conflict with the
+# session-aware routes above. FastAPI matches routes in registration order,
+# so our `/health` wins over the framework's plain default.
+_OPENENV_SERVER = HTTPEnvServer(
+    env=JailbreakerEnv,
+    action_cls=JailbreakAction,
+    observation_cls=JailbreakObservation,
+    max_concurrent_envs=int(os.getenv("MAX_CONCURRENT_ENVS", "8")),
+)
+_OPENENV_SERVER.register_routes(app, mode=ServerMode.PRODUCTION)

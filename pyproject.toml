@@ -8,11 +8,13 @@ version = "1.0.0"
 description = "Adversarial self-play RL environment for LLM safety training"
 requires-python = ">=3.11"
 dependencies = [
+    "openenv-core>=0.2.1",
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "pydantic>=2.9",
     "openai>=1.54",
     "requests>=2.32",
+    "websockets>=13.0",
 ]
 
 [tool.setuptools]
@@ -24,7 +26,9 @@ py-modules = [
     "defender",
     "rewards",
     "models",
+    "openenv_models",
     "environment",
+    "jailbreaker_env",
     "server",
     "inference",
     "train",
