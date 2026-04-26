@@ -145,7 +145,7 @@ def reward_fn(completions, **kwargs) -> List[float]:
         )
         strategy, payload = _parse_dsl(text)
         if strategy is None:
-            rewards.append(-0.3)
+            rewards.append(-1.5)
             continue
         rewards.append(_run_episode(strategy, payload, topic_id, CURRICULUM_LEVEL))
     return rewards
